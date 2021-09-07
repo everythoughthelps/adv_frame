@@ -1,4 +1,7 @@
 import argparse
+from copy import deepcopy
+
+import torchattacks
 import os
 
 import time
@@ -55,6 +58,11 @@ def cuda(model):
             args.batch_size *= device_num
     return model
 
+def attack_method(method,model):
+    if method == 'fgsm':
+        attack = torchattacks.FGSM(model,eps=args.eps)
+    return attack
+
 def load(model):
     if args.load:
         model.load_state_dict(torch.load(args.load)['state_dict'])
@@ -84,6 +92,57 @@ def train(model, train_data_loader, optimizer, criterion, epoch):
             f.write('%d,%d/%d,%f,%f,%f,%f\n' % (
                 epoch, i, len(train_data_loader), batch_time.val, batch_time.sum, losses.val, losses.avg))
 
+def train_adv_exmp(model, train_data_loader, optimizer, criterion, dist_criterion, epoch):
+    model.train()
+    batch_time = AverageMeter()
+    losses = AverageMeter()
+
+    end = time.time()
+    for i, data in enumerate(train_data_loader):
+        image, label = data
+        image = image.cuda()
+        label = label.cuda()
+        attack = attack_method(args.attack_method, model)
+        adv_image = attack(image, label)
+
+        optimizer.zero_grad()
+        output_adv, fea = model(adv_image)
+        entropy_loss = criterion(output_adv, label)
+        losses.update(entropy_loss.item(), image.size(0))
+        entropy_loss.backward()
+        optimizer.step()
+
+        batch_time.update(time.time() - end)
+        end = time.time()
+        print('%d,%d/%d,%f' % (epoch, i, len(train_data_loader), entropy_loss.item()))
+        with open(os.path.join(args.save_path, 'records_adv_batch.csv'), 'a') as f:
+            f.write('%d,%d/%d,%f,%f,%f,%f\n' % (
+                epoch, i, len(train_data_loader), batch_time.val, batch_time.sum, losses.val, losses.avg))
+
+def test_adv_exmp(model, test_data_loader, epoch):
+    model.eval()
+    correct = 0
+    total = 0
+    for i, data in enumerate(test_data_loader):
+        image, label = data
+        image = image.cuda()
+        label = label.cuda()
+        attack = attack_method(args.attack_method, model)
+        adv_images = attack(image, label)
+        outputs, fea = model(adv_images)
+        # the class with the highest energy is what we choose as prediction
+        _, predicted = torch.max(outputs.data, 1)
+        total += label.size(0)
+        correct += (predicted == label).sum().item()
+        print('%d,%d/%d,%s' % (epoch, i, len(test_data_loader), 'test process'))
+
+    acc = correct / total
+    print('Accuracy of the network on the 10000 test adversarial images: %d %%' % (
+            100 * correct / total))
+    with open(os.path.join(args.save_path, './records_adv_val.csv'), 'a') as f:
+        f.write('%d,%f\n' % (epoch, acc))
+    return acc
+
 def test(model, test_data_loader, epoch):
     model.eval()
     correct = 0
@@ -92,12 +151,13 @@ def test(model, test_data_loader, epoch):
         image, label = data
         image = image.cuda()
         label = label.cuda()
-        outputs = model(image)
+        outputs, fea = model(image)
         # the class with the highest energy is what we choose as prediction
         _, predicted = torch.max(outputs.data, 1)
         total += label.size(0)
         correct += (predicted == label).sum().item()
         print('%d,%d/%d,%s' % (epoch, i, len(test_data_loader), 'test process'))
+
     acc = correct / total
     print('Accuracy of the network on the 10000 test images: %d %%' % (
             100 * correct / total))
@@ -154,17 +214,24 @@ def main(args):
     load(model)
     optimizer = torch.optim.Adam(model.parameters(), args.lr)
     criterion = nn.CrossEntropyLoss()
+    dist_criterion = nn.CosineEmbeddingLoss(margin=0)
 
     for i in range(args.epoch):
         adjust_learning_rate(optimizer, i)
-        train(model, train_data_loader, optimizer, criterion, i)
-        test(model, test_data_loader, i)
+        #test(model, test_data_loader, i)
+        #test_adv_exmp(model, test_data_loader, i)
+        #train(model, train_data_loader, optimizer, criterion, i)
+        train_adv_exmp(model, train_data_loader, optimizer, criterion, dist_criterion, i)
+        if i == args.epoch -1:
+            test(model, test_data_loader, i)
+            test_adv_exmp(model, test_data_loader, i)
 
         save_checkpoint({'state_dict': model.state_dict()},
             filename=os.path.join(args.ckp_path, '%02dcheckpoint.pth.tar' % i))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='train script')
+    parser.add_argument('--attack_method', type=str, default='fgsm', choices=['fgsm','deepfool'])
     parser.add_argument('--data_root', type=str, default='/home/panmeng/data/')
     parser.add_argument('--dataset', type=str, default='CIFAR',choices=['ImageNet','CIFAR','MNIST'])
     parser.add_argument('--net_arch', type=str, default='wideresnet', choices=['resnet18', 'mnist_net', 'CIFAR_Net','wideresnet'])
@@ -172,8 +239,10 @@ if __name__ == '__main__':
     parser.add_argument('--num_worker', type=int, default=4)
     parser.add_argument('--lr', type=float, default=0.1)
     parser.add_argument('--epoch', type=int, default=25)
-    parser.add_argument('--load', type=str, default=None)
+    parser.add_argument('--eps',type=float, default=0.03137255)
+    parser.add_argument('--load', type=str, default='/home/panmeng/adv_frame/adv_frame/experiments/baseline/ckp/23checkpoint.pth.tar')
     parser.add_argument('--experiment', default='./experiments', type=str, help='path of experiments')
 
     args = parser.parse_args()
+    #os.environ['CUDA_VISIBLE_DEVICES'] ='0,1,2'
     main(args)

@@ -9,7 +9,15 @@ from torchvision import datasets
 from torch.utils.data import Dataset
 import argparse
 
+def setup_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    #np.random.seed(seed)
+    #random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
 def encapsulate_loader(args):
+    setup_seed(20)
     train_data = datasets.CIFAR10(root = args.data_root,
                                       train = True,
                                       transform = transforms.ToTensor(),
@@ -68,6 +76,7 @@ class CIFAR(Dataset):
         return len(self.images)
 
 def diy_dataloader(args):
+    setup_seed(20)
     train_data = CIFAR(args.data_root,True, transform=transforms.ToTensor())
     train_data_loader = torch.utils.data.DataLoader(train_data,
                                                     batch_size=args.batch_size,

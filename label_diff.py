@@ -1,4 +1,5 @@
 import argparse
+import numpy as np
 import os
 from torchvision.transforms import ToPILImage
 from PIL import Image
@@ -54,35 +55,14 @@ def load(model):
 def attack_method(method,model):
     if method == 'fgsm':
         attack = torchattacks.FGSM(model,eps=args.eps)
+    elif method == 'bim':
+        attack = torchattacks.BIM(model, eps= args.eps, alpha=1/255, steps=0)
+    elif method == 'deepfool':
+        attack = torchattacks.DeepFool(model)
+    elif method == 'pgd':
+        attack = torchattacks.PGD(model,eps=args.eps,alpha=1/255)
 
     return attack
-
-def adv_img_root(data_root, method, eps):
-    adv_train_save_path = os.path.join(data_root,method,str(eps),'train')
-    adv_test_save_path = os.path.join(data_root,method,str(eps),'test')
-    os.makedirs(adv_train_save_path,exist_ok=True)
-    os.makedirs(adv_test_save_path,exist_ok=True)
-    if 'CIFAR' or 'MNIST' in data_root:
-        for i in range(10):
-            adv_cla_train_dir = os.path.join(adv_train_save_path,str(i))
-            os.makedirs(adv_cla_train_dir,exist_ok=True)
-            adv_cla_test_dir = os.path.join(adv_test_save_path,str(i))
-            os.makedirs(adv_cla_test_dir,exist_ok=True)
-    elif 'ImageNet' in data_root:
-        pass
-
-    return adv_train_save_path, adv_test_save_path
-
-
-def save_image(images,labels,save_path,iter):
-    for i in range(images.size(0)):
-        adv_image = images[i:i + 1, :, :, :]
-        adv_image = adv_image.squeeze()
-        cla = labels[i:i + 1].item()
-        image_save_path = os.path.join(save_path, str(cla), str('%05d' %(iter * args.batch_size + i)) + '.jpg')
-        print(image_save_path)
-        adv_image = ToPILImage()(adv_image.cpu())
-        adv_image.save(image_save_path)
 
 
 def main(args):
@@ -93,17 +73,10 @@ def main(args):
     attack = attack_method(args.attack_method,model)
     train_data_loader, test_data_loader = choose_data(args.dataset)
 
-    #for i, data in enumerate(train_data_loader):
-    #    images, labels = data
-    #    images = images.cuda()
-    #    labels = labels.cuda()
-    #    adv_images = attack(images, labels)
-    #    adv_images = adv_images.squeeze()
-    #    save_image(adv_images,labels,adv_train_save_dir,i)
-
     correct = 0
     total = 0
     #with torch.no_grad():
+    dump = np.zeros((10,10))
     for i, data in enumerate(test_data_loader):
         model.eval()
         images, label = data
@@ -115,21 +88,22 @@ def main(args):
         _, predicted = torch.max(outputs.data, 1)
         total += label.size(0)
         correct += (predicted == label).sum().item()
+        for j in range(len(label)):
+            dump[label[j]][predicted[j]] += 1
         print('%d/%d' % (i, len(test_data_loader)))
     acc = correct / total
     print('Accuracy of the network on the 10000 test images: %f %%' % (
         100 * correct / total))
-
-    save_image(adv_images,labels,adv_test_save_dir,i)
+    np.save('pgd.npy',dump)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='attck template')
     parser.add_argument('--data_root', type=str, default='/home/panmeng/data/')
     parser.add_argument('--dataset', type=str, default='CIFAR',choices=['CIFAR','MNIST'])
     parser.add_argument('--net_arch', type=str, default='wideresnet', choices=['resnet18', 'mnist_net', 'CIFAR_Net','wideresnet'])
-    parser.add_argument('--load', type=str, default='/home/panmeng/adv_frame/adv_frame/experiments/2021_08_30_15_52_59/ckp/23checkpoint.pth.tar')
-    parser.add_argument('--attack_method', type=str, default='fgsm', choices=['fgsm','deepfool'])
-    parser.add_argument('--eps',type=float, default=0.03137)
+    parser.add_argument('--load', type=str, default='/home/panmeng/adv_frame/adv_frame/experiments/baseline/ckp/15checkpoint.pth.tar')
+    parser.add_argument('--attack_method', type=str, default='pgd',choices=['fgsm','deepfool','bim','pgd'])
+    parser.add_argument('--eps',type=float, default=8/255)
     parser.add_argument('--batch_size',type=int,default=64)
     parser.add_argument('--num_worker', type = int, default=4)
 
